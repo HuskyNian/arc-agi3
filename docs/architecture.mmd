@@ -1,0 +1,25 @@
+%% ARC-AGI-3 当前框架；依据 arc-agi-3-m2-my.ipynb 的运行配置。
+%% 只描述已存在的模块，不包含研究建议中的新模块。
+flowchart TD
+    A["Notebook 启动<br/>加载源码 Dataset、模型和 benchmark"] --> B["TAAF Benchmark / HarnessSolver<br/>创建游戏会话，管理运行预算"]
+    A --> S["SGLang / Pennyroyal<br/>Qwen3.8-Flash-Next W4A16<br/>MTP 推测解码、KV / Mamba 缓存"]
+    B --> Q["全局优先级调度<br/>最多 10 个活跃游戏流"]
+    Q --> C["单游戏 ToolAgent<br/>观察、推理、调用工具、继续"]
+    C --> P["组织模型输入<br/>棋盘图、差分图、死亡图<br/>动作结果、对话及 thinking 历史"]
+    P --> S
+    S --> D["模型返回推理与 Python 工具调用"]
+    D --> E["Python 沙箱<br/>读取棋盘与历史，按需读取最近动作动画<br/>分析规则、编写搜索、复用函数"]
+    E -->|"仅分析 / 搜索"| H["工具结果与最新观察"]
+    E -->|"调用 action"| G["动作执行与保护<br/>可用时支持 UNDO；批量无效动作停止<br/>陈旧状态及过关 / 死亡保护"]
+    G --> R["ARC 游戏环境<br/>提交时通过 Kaggle Gateway 交互"]
+    R --> F["记录转移与关卡状态<br/>失败时自动重置当前关卡"]
+    F --> H
+    H --> C
+    C --> M["上下文管理<br/>128 Ki 总窗口，预留 12 Ki 输出<br/>校准 Token 估算，批量裁剪旧历史"]
+    M -->|"保留前缀时继续"| P
+    M -->|"裁剪后重新竞争名额"| Q
+    F -->|"游戏完成"| Z["结束会话、释放名额、汇总结果"]
+    B -->|"预算耗尽"| Z
+    Z -.->|"唤醒等待游戏"| Q
+    K["函数保留：同游戏内复用合格函数和支持的 import<br/>普通 Python 变量不跨调用保留"] -.-> E
+    N["当前结构化 world model 关闭<br/>搜索由模型现场编写，无强制模拟器验证流水线"] -.-> C

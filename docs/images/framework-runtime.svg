@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1500" viewBox="0 0 1500 1500" role="img" aria-labelledby="title desc">
+  <title id="title">ARC AGI 3 当前方案的模块与运行逻辑</title>
+  <desc id="desc">Notebook 加载源码和模型，TAAF 管理游戏会话，优先级调度允许十个活跃游戏流。每个 ToolAgent 组织观察和历史，调用 Qwen 生成 Python，在沙箱中分析或执行游戏动作，接收反馈后继续。上下文裁剪触发重新调度。图中仅包括现有功能。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/></marker>
+    <marker id="feedback" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#0f766e"/></marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; fill: #172b45; }
+      .title { font-size: 33px; font-weight: 700; }
+      .subtitle { font-size: 18px; fill: #5b6b80; }
+      .heading { font-size: 21px; font-weight: 650; }
+      .body { font-size: 17px; }
+      .small { font-size: 15px; fill: #53657a; }
+      .label { font-size: 16px; fill: #53657a; }
+      .box { fill: white; stroke: #cbd5e1; stroke-width: 1.5; }
+      .blue { fill: #edf5ff; stroke: #93b9ec; }
+      .green { fill: #eaf8f4; stroke: #84c6b5; }
+      .amber { fill: #fff7e7; stroke: #e4c583; }
+      .line { fill: none; stroke: #64748b; stroke-width: 2; marker-end: url(#arrow); }
+      .return { fill: none; stroke: #0f766e; stroke-width: 2.5; marker-end: url(#feedback); }
+      .dash { stroke-dasharray: 7 6; }
+    </style>
+  </defs>
+  <rect width="1500" height="1500" fill="#f6f8fc"/>
+  <text x="58" y="66" class="title">ARC AGI 3 当前方案的模块与运行逻辑</text>
+  <text x="58" y="103" class="subtitle">Qwen3.8-Flash-Next · Duck Harness · 多游戏调度 · Python 工具闭环</text>
+
+  <rect x="515" y="143" width="470" height="102" rx="15" class="box"/>
+  <text x="750" y="180" text-anchor="middle" class="heading">Notebook 启动</text>
+  <text x="750" y="213" text-anchor="middle" class="body">加载源码 Dataset、权重和 benchmark 配置</text>
+  <path d="M750 245 V280" class="line"/>
+
+  <rect x="515" y="280" width="470" height="104" rx="15" class="box"/>
+  <text x="750" y="318" text-anchor="middle" class="heading">TAAF Benchmark / HarnessSolver</text>
+  <text x="750" y="350" text-anchor="middle" class="body">创建游戏会话 · 管理运行预算与结束流程</text>
+  <path d="M750 384 V420" class="line"/>
+
+  <rect x="515" y="420" width="470" height="109" rx="15" class="box blue"/>
+  <text x="750" y="458" text-anchor="middle" class="heading">全局优先级调度</text>
+  <text x="750" y="490" text-anchor="middle" class="body">最多 10 个活跃游戏流，其余会话等待</text>
+  <rect x="475" y="551" width="550" height="612" rx="23" fill="#eaf0f8" stroke="#cedbea"/>
+  <text x="499" y="579" class="small">每个游戏独立的观察—推理—执行循环</text>
+  <path d="M940 529 V598" class="line"/>
+
+  <rect x="515" y="598" width="470" height="140" rx="15" class="box blue"/>
+  <text x="750" y="634" text-anchor="middle" class="heading">ToolAgent 组织模型输入</text>
+  <text x="750" y="666" text-anchor="middle" class="body">当前棋盘图、差分图、死亡图、动作反馈</text>
+  <text x="750" y="694" text-anchor="middle" class="body">保留对话、工具结果与 thinking 历史</text>
+  <text x="750" y="720" text-anchor="middle" class="small">每轮判断：分析、行动，或继续推理</text>
+
+  <rect x="1090" y="580" width="350" height="205" rx="15" class="box blue"/>
+  <text x="1265" y="617" text-anchor="middle" class="heading">SGLang / Pennyroyal</text>
+  <text x="1265" y="650" text-anchor="middle" class="body">Qwen3.8-Flash-Next W4A16</text>
+  <text x="1265" y="682" text-anchor="middle" class="body">MTP 推测解码 · FP8 KV</text>
+  <text x="1265" y="714" text-anchor="middle" class="body">Mamba 状态与前缀缓存</text>
+  <text x="1265" y="751" text-anchor="middle" class="small">固定预算内增加有效推理吞吐</text>
+  <path d="M985 656 H1090" class="line"/>
+  <text x="1038" y="644" text-anchor="middle" class="label">请求</text>
+  <path d="M1265 785 V849 H985" class="line"/>
+  <text x="1244" y="830" text-anchor="middle" class="label">返回推理与 Python 代码</text>
+
+  <rect x="515" y="793" width="470" height="146" rx="15" class="box green"/>
+  <text x="750" y="831" text-anchor="middle" class="heading">Python 沙箱</text>
+  <text x="750" y="863" text-anchor="middle" class="body">读取棋盘 / 历史 / 最近动作动画</text>
+  <text x="750" y="895" text-anchor="middle" class="body">分析规则、编写搜索、复用辅助函数</text>
+  <text x="750" y="922" text-anchor="middle" class="small">仅分析不消耗游戏动作，但仍消耗运行时间</text>
+  <path d="M515 866 H492 V712 H515" class="return"/>
+  <text x="468" y="787" text-anchor="end" class="label">分析结果</text>
+  <path d="M750 939 V986" class="line"/>
+  <text x="768" y="968" class="label">调用 action</text>
+
+  <rect x="515" y="986" width="470" height="143" rx="15" class="box amber"/>
+  <text x="750" y="1024" text-anchor="middle" class="heading">动作执行与保护</text>
+  <text x="750" y="1056" text-anchor="middle" class="body">UNDO · 批量无效动作停止 · 陈旧状态保护</text>
+  <text x="750" y="1088" text-anchor="middle" class="body">过关 / 死亡后停止继续执行旧计划</text>
+  <text x="750" y="1115" text-anchor="middle" class="small">状态变化判定不等同于预测正确性验证</text>
+
+  <rect x="1090" y="970" width="350" height="175" rx="15" class="box green"/>
+  <text x="1265" y="1008" text-anchor="middle" class="heading">ARC 游戏环境</text>
+  <text x="1265" y="1040" text-anchor="middle" class="body">提交时通过 Kaggle Gateway</text>
+  <text x="1265" y="1072" text-anchor="middle" class="body">返回棋盘、动画和关卡状态</text>
+  <text x="1265" y="1107" text-anchor="middle" class="small">失败后由 harness 重置当前关卡</text>
+  <path d="M985 1047 H1090" class="line"/>
+  <path d="M1440 1047 H1470 V555 H1045 V689 H985" class="return"/>
+  <text x="1260" y="544" text-anchor="middle" class="label">保存动作证据，反馈最新观察</text>
+
+  <rect x="58" y="420" width="350" height="221" rx="15" class="box blue"/>
+  <text x="233" y="459" text-anchor="middle" class="heading">上下文与缓存协同</text>
+  <text x="233" y="494" text-anchor="middle" class="body">128 Ki 总窗口，预留 12 Ki 输出</text>
+  <text x="233" y="527" text-anchor="middle" class="body">校准文本与图像 Token 估算</text>
+  <text x="233" y="560" text-anchor="middle" class="body">超限时批量裁剪旧历史</text>
+  <text x="233" y="602" text-anchor="middle" class="small">前缀不变时通常保留游戏名额</text>
+  <text x="233" y="626" text-anchor="middle" class="small">裁剪改变前缀后，再重新竞争名额</text>
+  <path d="M515 666 H442 V594 H408" class="line dash"/>
+  <path d="M408 473 H515" class="line dash"/>
+  <text x="461" y="456" text-anchor="middle" class="small">重新调度</text>
+
+  <rect x="58" y="822" width="350" height="171" rx="15" class="box green"/>
+  <text x="233" y="862" text-anchor="middle" class="heading">同游戏内的代码复用</text>
+  <text x="233" y="899" text-anchor="middle" class="body">保留合格函数与支持的 import</text>
+  <text x="233" y="932" text-anchor="middle" class="body">普通变量不跨工具调用保留</text>
+  <text x="233" y="969" text-anchor="middle" class="small">不是完整持久的 Python REPL</text>
+  <path d="M408 903 H515" class="line dash"/>
+
+  <rect x="1090" y="1195" width="350" height="92" rx="15" class="box"/>
+  <text x="1265" y="1232" text-anchor="middle" class="heading">完成或预算耗尽</text>
+  <text x="1265" y="1265" text-anchor="middle" class="body">结束会话、释放名额、汇总结果</text>
+  <path d="M1265 1145 V1195" class="line"/>
+
+  <rect x="58" y="1195" width="967" height="92" rx="15" fill="#edf0f5"/>
+  <text x="80" y="1230" class="body">当前配置：结构化 world model 关闭；搜索主要由模型现场编写。</text>
+  <text x="80" y="1263" class="body">图中未加入研究建议中的持久工作区、完整动画检索、预测验证与自动规划模块。</text>
+  <text x="58" y="1340" class="small">依据本地 notebook 与源码 · 可编辑 Mermaid 源文件：docs/architecture.mmd · 2026-10-13</text>
+</svg>

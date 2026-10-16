@@ -1,8 +1,10 @@
 # ARC AGI 3 开发计划与实验记录
 
-持续记录方案、实现、实验条件和结果。当前状态（2026-10-15）：C1 持久工作区、G1 按需历史回测和 Q1 精简 prompt 已实现并通过本地测试，尚未进行模型跑分。主要能力方向仍为反例驱动的规则程序、搜索与跨关复用，下一步做匹配预算的 Kaggle 消融。F1 截断恢复、B1 历史动画保留为独立候选。保留 Qwen3.8-Flash-Next、现有 serving 和调度作为起点。分析见 [首次运行报告](analysis/README.md)；战略调整见 [较大改进方向](analysis/high_upside_changes.md)。
+持续记录方案、实现、实验条件和结果。当前状态（2026-10-16 清理后）：旧工作区、历史回测、精简 prompt 的实现、专属测试、沙箱接口和配置开关已删除。P1停滞反馈、P2逐步验证执行保留并在 notebook 中开启；剩余20项测试通过，未跑Kaggle成绩。新功能关闭时系统prompt与A0逐字一致，所有notebook代码格编译通过。模型、serving、调度和预算不变。运行说明见 [新实现说明](docs/strategy-and-execution.md)，历史结果与失败记录保留。
 
 ## 开发约定
+
+- 运行模式审计：`TRUE_SUBMISSION` 同时影响游戏来源、pass 数、会话并发、时间预算和诊断，并非仅切换 gateway。详见 [第二次运行报告](analysis/second_run.md)。待实现：将真实比赛模式与诊断等级、实验预算解耦；作为独立实验验证日志开销，不与 prompt 消融混改。
 
 - 以固定硬件、固定总运行时间下的得分和关卡完成情况为主要指标；tokens/s 是辅助指标。
 - 每次实验明确源码版本、notebook 版本、配置、游戏集合、顺序、pass 数和时间预算；单项改动对比，保留失败结果。
@@ -18,7 +20,7 @@
 - 模型：Qwen3.8-Flash-Next，W4A16 AutoRound；SGLang / Pennyroyal，MTP 推测解码。
 - Notebook 配置：harness 128 Ki 上下文，预留 12 Ki 输出；保留 thinking；批量裁剪旧历史；最多 10 个活跃游戏流。
 - 工具：Python 沙箱、棋盘与历史、最近动作动画、差分、UNDO、动作保护；同游戏保留合格函数和支持的 import。
-- 普通变量仍不隐式跨调用保留；新增显式 workspace 保存数据，规则函数沿用原有保留机制；新增按需 backtest 返回历史反例。结构化文字 world model 仍关闭，不强制每轮建模或回测。
+- 普通变量不隐式跨调用保留；沿用原有函数保留机制。旧 workspace/backtest/compact 实验实现已删除；当前增加停滞反馈与 execute_plan，结构化文字 world model 仍关闭。
 - 用户计划将修改后的源码上传 Kaggle Dataset，直接加载，移除 notebook 的 harness patch。上传后的路径和实际导入来源仍须在 Kaggle 验证；bundle 中的 pickle 等部署资源也须保留或另行构建。
 - 仓库原作者的 `WRITEUP.md` 记录公开成绩 27.89；用户描述当前约 30 分。现已取得 working_output 完整产物：本地这份 benchmark 均分 47.28；不等同于隐藏集排行榜成绩。
 - 框架图：[PNG](docs/images/framework-runtime.png)、[SVG](docs/images/framework-runtime.svg)、[Mermaid](docs/architecture.mmd)。
@@ -236,3 +238,66 @@ GPU 指标定义参考：[NVIDIA nvidia-smi](https://docs.nvidia.com/deploy/nvid
 - [ ] Kaggle 配对消融：全关 → 仅 C1 → C1+G1 → C1+G1+Q1；同游戏/顺序/总预算，记录新增工具的实际使用及成绩。
 
 实现与运行说明：[workspace-and-backtest.md](docs/workspace-and-backtest.md)。测量：[prompt_comparison.json](analysis/prompt_comparison.json)；真实历史接口检查：[backtest_real_history_smoke.json](analysis/backtest_real_history_smoke.json)。
+
+### 源码 Dataset 路径
+
+- 用户已上传源码到 `/kaggle/input/datasets/zhuzhumiao/nian-arc-agi3`；notebook 第一个代码 cell 已将其设为 ARC3_SOURCE_ROOT 的默认路径。
+- 仍可用环境变量覆盖；假设 Dataset 根目录直接包含 ARC3-Inference 和 tufa-arc-agi-framework，实际 Kaggle 目录与导入结果待运行验证。
+
+## 第二次完整运行：C1 + G1 + Q1
+
+- [x] 分析 working_output2：相同 25×4，均分 47.28→39.89（-7.40），通关 33→25，完成关卡 410→390，动作 20670→22937。
+- [x] 全部 200 个前后成绩重算一致；时长约 8h12m，游戏 ID、关卡数、基准动作数相同。
+- [x] 根据用户配置，三个新开关均为 1；TRUE_SUBMISSION=False 不会关闭功能，不应为启用功能手动切成 True。
+- [ ] 缺 source_manifest.json、serve.log、transcripts 和动作事件；无法核实实际启用/调用频率或归因。
+- [ ] 下一轮仅将 ARC3_COMPACT_PROMPT 设为 0，其他条件固定；再视结果单独消融 G1/C1。本轮分析未修改实际开关。
+- [ ] 优先检查 tr87、ft09、cd82 退化轨迹与 sp80/dc22 改善轨迹。
+- 当前决定：不保留“已改善”的结论；字符减少不代表推理加速，工程测试不代表模型成绩不退化。
+
+详见 [第二次运行报告](analysis/second_run.md) 与 [逐游戏比较](analysis/second_run_games.csv)。
+
+
+## 2026-10-15 第三轮中途复核与 Q2
+
+- [x] 识别混合产物：working_output2/logs.md 是15:02新运行的中途日志，benchmark.json仍是00:52旧运行；不可拼成完整第三轮。
+- [x] 新增 analyze_third_progress.py，还原21个同预算时间检查点；最新约3h31m：A0 23.69，全开19.64，关Q1 21.68。历史200个最终分数重算通过。
+- [x] 复核 AVO、Tycho、Schema、VISTA、Workspace Optimization 原始来源，记录可迁移机制、模型/公开集边界与规则核实缺口。
+- [x] Q2：原系统prompt构建后才做17组措辞替换、3组条件去重；恢复原逐轮/换关/死亡/摘要/函数提醒。19979→19006字符（-4.87%），全关与A0文本逐字一致。
+- [x] 源码默认Q2=0，notebook仅第一个代码cell（JSON index2）的compact配置改为0；C1/G1仍1。
+- [x] 28项本地测试通过；新增分支合约、原用户prompt保留、prefix不改写检查。未运行新Kaggle实验，不声称语义或成绩绝对不变。
+- [ ] 收齐第三轮最终benchmark、manifest和失败轨迹；后续每轮使用独立目录。
+- [ ] P0：同条件原方案对照、工具实际使用及等待/服务耗时记录。
+- [ ] P1：停滞事件先shadow统计，再单独测试短反例反馈；避免每轮强制反思和误把搜索/排队当停滞。
+- [ ] P2：版本化计划 + 每步预测检查 + 首个不匹配停执行；不强制所有游戏建模。
+- [ ] P3：同游戏跨关技能与适用条件、机制多标签检索；精确网格读取另做观察接口实验。
+- [ ] P4：开发阶段跨游戏提炼冻结通用技能；评测时在线共享须先核实明确规则，当前保持隔离。
+
+报告：[策略复核与优先级](analysis/strategy_revision_2026-10-15.md)。Prompt：[当前完整文本](analysis/prompt_v2_conservative.txt)、[逐行差异](analysis/prompt_v2.diff)、[审计](analysis/prompt_v2_audit.json)。
+
+
+## 2026-10-16 撤回旧实验，实现 P1/P2
+
+- [x] C1/G1/Q1/Q2 默认与 notebook 配置全关；不分配工作区，不给模型旧接口说明，历史代码/测试保留复现。
+- [x] P1：新增 strategy_monitor.py。连续3次相同状态/代码下的错误、保护拒绝、预测反例或相同只读输出，给具体证据和下一步建议；8次工具调用冷却，最多8条近期证据。off/shadow/on独立开关。
+- [x] 不以没升关、像素变化、单次长推理或排队等待判定停滞；不自动重开游戏、不硬性放弃关卡、不增加监督LLM。
+- [x] P2：新增 verified_plan.py 与沙箱 execute_plan。1..16步，预测/观测只读，每步真实动作后验证；不符、错误、拒绝、换关或死亡停执行，余下snippet动作锁住，原保护和动作成本保留。
+- [x] 新功能不依赖旧workspace/backtest；正确计划连续执行不经过额外LLM调用，无可靠预测时仍可直接action探索。
+- [x] 宿主无条件保留计划报告（即便模型忽略返回值），按游戏/pass写strategy/*.jsonl，包含配置、会话/调用编号、状态和代码指纹、tokens、工具耗时、动作数、触发及计划事件。
+- [x] 新增 analysis/summarize_strategy_run.py 汇总小日志；无需完整请求日志即可看使用率和中断类型。
+- [x] notebook第1代码cell（index2）：旧三项0，新monitor=on、verified_plan=1；第4代码cell（index8）：新模块导入核验与manifest五开关。模型/serving/调度/预算未改。
+- [x] 45项本地测试通过，含真实sandbox与宿主动作/状态刷新链路、超时动作记账、停止锁、隔离与反馈冷却；全部notebook代码格编译通过。
+- [x] 全关系统prompt与A0的18467字符逐字一致；P2仅追加918字符说明，P1无静态prompt。完整文本在analysis/prompt_strategy_execution.txt。
+- [ ] 更新Kaggle Dataset、重启kernel后跑真实游戏；本地验证不代表上分。
+- [ ] 原方案、shadow、仅P1、仅P2、组合分别做匹配预算实验；下载manifest/benchmark/strategy目录到独立run目录。
+
+实际能力边界：P1只处理工具链中可核实的重复证据，不自动理解纯推理循环；P2只验证声明字段，不保证完整世界模型或目标正确。完整说明：[strategy-and-execution.md](docs/strategy-and-execution.md)。
+
+
+## 2026-10-16 删除停用实现
+
+- [x] 删除 workspace.py、rule_backtest.py、compact_prompt.py、旧专属测试 test_workspace_backtest.py。
+- [x] 删除失效审计脚本 analysis/audit_prompt_v2.py 和旧精简源码快照 analysis/compact_prompt_v1_source.txt。
+- [x] 移除宿主实例/同步/调用、沙箱嵌入源码/RPC/回调分支及旧三个配置开关；新验证回调继续独立保持只读保护。
+- [x] notebook第1、第4个代码cell移除旧配置及manifest字段，只保留两个新实验开关。
+- [x] 删除旧模块字节码；代码引用扫描无悬空依赖。历史跑分分析、prompt文本对比和开发过程记录保留，旧说明明确标记失效。
+- [x] 剩余20项测试通过（旧功能专属25项随实现删除），全部notebook代码格编译通过，原始prompt逐字一致核验通过。

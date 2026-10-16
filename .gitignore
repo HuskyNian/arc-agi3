@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 working_output/
+working_output2/
 # Runtime caches (created by `make`/`make view`)
 .cache/
 analysis/

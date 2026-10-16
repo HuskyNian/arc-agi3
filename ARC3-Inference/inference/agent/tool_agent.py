@@ -10,6 +10,7 @@ import os
 import random
 import re
 import time
+from collections import deque
 from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,10 +68,7 @@ from inference.agent.vision_context import (
 )
 
 from inference.agent.python_tool_sandbox import run_sandboxed_python
-from inference.agent.workspace import Workspace
-from inference.agent.compact_prompt import (
-    build_compact_prompt, WORKSPACE_GUIDANCE, BACKTEST_GUIDANCE, COMPACT_SUMMARY,
-)
+from inference.agent.strategy_monitor import StrategyMonitor, fingerprint
 from inference.agent.runtime_state import Frame, HistoryEntry, RUNTIME_STATE_FILENAME, load_runtime_state
 from inference.utils.openai_compat import (
     assemble_streamed_chat_response,
@@ -2655,27 +2653,12 @@ def _render_auto_frame_diff(
 
 
 def _build_system_prompt(*, tool_output_tokens: int) -> str:
-    if _get_env_bool("ARC3_COMPACT_PROMPT", True):
-        return build_compact_prompt(
-            tool_output_tokens=tool_output_tokens,
-            python_timeout=min(30, max(1, _LOCAL_ANALYZER_TOOL_TIMEOUT)),
-            persistent_scope=_persistent_functions_scope() if _persistent_functions() else None,
-            retain_imports=_get_env_bool("ARC3_PERSISTENT_FUNCTIONS_IMPORTS", False),
-            workspace=_get_env_bool("ARC3_WORKSPACE", True),
-            backtest=_get_env_bool("ARC3_RULE_BACKTEST", True),
-            animation=_animation_enabled(), timeline=_animation_timeline_enabled(),
-            reset=reset_exposed(), undo=undo_exposure_mode() == "on",
-            memory=not _memory_sections_disabled(),
-            prefix=os.environ.get("ARC3_SYSTEM_PROMPT_PREFIX", "").strip(),
-        )
     prompt = "You are a coding agent solving a grid-based puzzle game."
     # ARC3_SYSTEM_PROMPT_PREFIX (read at call time): prepended verbatim as the
     # first line(s) of the system prompt. Intended for model-specific control
     # directives that live in the system prompt, e.g. Nemotron's "/think"
     # reasoning toggle. Empty/unset leaves the prompt unchanged.
     _prefix = os.environ.get("ARC3_SYSTEM_PROMPT_PREFIX", "").strip()
-    if _prefix:
-        prompt = f"{_prefix}\n\n{prompt}"
     prompt += GAME_OVERVIEW_ADDENDUM
     prompt += STRUCTURED_RUNTIME_STATE_ADDENDUM
     if _explain_gameplay_changed():
@@ -2764,11 +2747,20 @@ def _build_system_prompt(*, tool_output_tokens: int) -> str:
     )
     if _level_transfer_guidance_enabled():
         prompt = apply_level_transfer_system_guidance(prompt)
-    if _get_env_bool("ARC3_WORKSPACE", True):
-        prompt += WORKSPACE_GUIDANCE
-    if _get_env_bool("ARC3_RULE_BACKTEST", True):
-        prompt += BACKTEST_GUIDANCE
-    return prompt
+    if _get_env_bool("ARC3_VERIFIED_PLAN", False):
+        prompt += (
+            "\nOptional verified execution: execute_plan(actions, predict, observe, start=(level, step)) "
+            "runs 1..16 actions through the normal guards. Pass the level/step of the frame used to plan. "
+            "predict(before_frame, action_dict) returns a nonempty dict of expected observable fields; "
+            "action_dict uses {'action': 'RIGHT'} or {'action': 'MOUSE', 'row': r, 'col': c}. "
+            "observe(frame) returns those fields, e.g. {'player': [row, col]}. Both callbacks are read-only. "
+            "Each matching step continues without another model call. A mismatch, callback error, refusal, "
+            "or level/death event stops the plan; further actions in that snippet are blocked. "
+            "RESET separately, then plan from its returned frame. Check meaningful changing fields; matching "
+            "them does not prove all rules or the goal. Use when a prediction is available; direct action() "
+            "remains available for exploration. Reports include executed/verified counts and the first mismatch.\n"
+        )
+    return f"{_prefix}\n\n{prompt}" if _prefix else prompt
 
 
 @dataclass(frozen=True)
@@ -3546,7 +3538,8 @@ class ToolAgent:
         self._priority_current = _PRIORITY_UNTRIMMED_BASE - max(0, int(dispatch_index))
         self._priority_next = self._priority_current
         self._kept_functions: dict[str, str] = {}
-        self._workspace = Workspace()
+        self._strategy_monitor = StrategyMonitor()
+        self._strategy_session_path = None
         self._last_animation_chain: list[Any] = []
         self._last_action_gameplay_changed: bool | None = None
         self._pending_animation_image: dict[str, Any] | None = None
@@ -3628,7 +3621,7 @@ class ToolAgent:
         runtime_dir = state_path.parent
         if self._session_runtime_dir != runtime_dir:
             self._session_runtime_dir = runtime_dir
-            self._workspace = Workspace()
+            self._strategy_monitor = StrategyMonitor()
             self._priority_level_count_warned = False
             if _persistent_functions():
                 self._kept_functions = {}
@@ -4612,13 +4605,12 @@ class ToolAgent:
             parts = [notice] if notice else []
             if signatures:
                 scope = {"levelup": "on this level", "turn": "in this turn", "game": "in this game"}[_persistent_functions_scope()]
-                parts.append(("Retained functions (" + scope + "): " + ", ".join(signatures) + ".")
-                    if _get_env_bool("ARC3_COMPACT_PROMPT", True) else (
+                parts.append(
                     "Your retained functions from earlier Python calls " + scope + ": "
                     + ", ".join(signatures) + ". These are your previous definitions, "
                     "available to call directly. Their presence does not mean they are "
                     "correct; revise them if new evidence contradicts their assumptions."
-                ))
+                )
             self._retained_clear_notice = ""
             return "\n\n" + "\n".join(parts) if parts else ""
         except Exception:
@@ -4980,8 +4972,7 @@ class ToolAgent:
                 lines.append("You have completed the run!")
             elif previous_step_summary.get("level_transition"):
                 lines.append(
-                    "New level: reuse supported mechanics, inspect this layout/new elements, and replace the old plan."
-                    if _get_env_bool("ARC3_COMPACT_PROMPT", True) else LEVEL_START_USER_PROMPT
+                    LEVEL_START_USER_PROMPT
                     if _level_transfer_guidance_enabled()
                     else "You have progressed to a new level!"
                 )
@@ -4992,9 +4983,6 @@ class ToolAgent:
                 )
             if previous_step_summary.get("game_over"):
                 lines.append(
-                    "Attempt failed and this level auto-reset. Inspect the fatal transition to distinguish "
-                    "a harmful action from an exhausted budget; a merely shrinking bar is not proof of exhaustion."
-                    if _get_env_bool("ARC3_COMPACT_PROMPT", True) else
                     "GAME OVER occurred during the previous sequence. This means the "
                     "attempt FAILED (it does NOT mean the run is finished). The game has "
                     "already been automatically RESET: the current level restarted from "
@@ -5128,15 +5116,6 @@ class ToolAgent:
                     current_frame, history_entries, previous_step_summary
                 )
             )
-        if _get_env_bool("ARC3_COMPACT_PROMPT", True):
-            # API lives in the system message. Keep the turn opener about the
-            # actual state and consequences, not another mandatory checklist.
-            knowledge_lines = self._summarized_knowledge_lines()
-            if knowledge_lines:
-                lines.extend(knowledge_lines)
-            lines.extend(self._memory_section_guidance(bool(knowledge_lines)))
-            lines.append("Use python to resolve a specific uncertainty or execute the supported next action/plan.")
-            return "\n".join(lines)
         lines.extend(
             [
                 "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_call_result`, `frame_diff(before, after)`, and `action(actions)`.",
@@ -5752,6 +5731,72 @@ class ToolAgent:
         return compact
 
     def _run_python_tool(self, state_path: Path, arguments: dict[str, Any]) -> _ToolDispatchResult:
+        mode = os.environ.get("ARC3_STRATEGY_MONITOR", "off").strip().lower()
+        if mode not in {"off", "shadow", "on"}:
+            raise ValueError("ARC3_STRATEGY_MONITOR must be off, shadow, or on")
+        verified = _get_env_bool("ARC3_VERIFIED_PLAN", False)
+        if mode == "off" and not verified:
+            return self._run_python_tool_impl(state_path, arguments)
+        self._ensure_session(state_path)
+        if self._strategy_session_path != state_path:
+            self._strategy_session_path = state_path
+            self._strategy_monitor = StrategyMonitor()
+            self._strategy_tool_index = 0
+            self._strategy_session_id = str(time.time_ns())
+        self._strategy_tool_index += 1
+        self._strategy_plan_events = deque(maxlen=32)
+        self._strategy_plan_event_count = 0
+        self._strategy_actions = []
+        before, _ = load_runtime_state(state_path)
+        state_key = fingerprint(before.grid) if before else "missing"
+        model_key = fingerprint([arguments.get('code'), self._retained_sources()])
+        started = time.monotonic()
+        dispatch = self._run_python_tool_impl(state_path, arguments)
+        payload = json.loads(dispatch.content)
+        plans = [p for p in self._strategy_plan_events if p.get('event') == 'finish']
+        if plans:
+            payload['plan_reports'] = plans[-2:]
+        event = None
+        if mode != "off":
+            event = self._strategy_monitor.observe(
+                level=before.level if before else None, state_key=state_key,
+                model_key=model_key, error=str(payload.get('error') or ''),
+                actions=self._strategy_actions, plans=plans,
+                output_key=(fingerprint([payload.get('stdout'),payload.get('result')])
+                            if payload.get('stdout') or payload.get('result') is not None else ''))
+        if event and mode == "on":
+            payload['strategy_feedback'] = event
+        # Host-side evidence log, independent of model context and request logs.
+        # Queue/LLM time is deliberately excluded from this tool duration.
+        record = dict(event='strategy_tool', mode=mode, verified_plan=verified,
+                      session_id=self._strategy_session_id, tool_call=self._strategy_tool_index,
+                      generated_tokens=self._session_generated_tokens,
+                      level=before.level if before else None, step=before.step if before else None,
+                      state_key=state_key, model_key=model_key,
+                      tool_seconds=round(time.monotonic()-started, 4),
+                      executed=sum(int(a.get('executed_count') or bool(a.get('executed'))) for a in self._strategy_actions),
+                      error=str(payload.get('error') or '').splitlines()[-1:][:1],
+                      plan_events=list(self._strategy_plan_events), intervention=event,
+                      plan_events_dropped=max(0, self._strategy_plan_event_count-len(self._strategy_plan_events)),
+                      feedback_sent=bool(event and mode == 'on'))
+        record['error'] = [e[:300] for e in record['error']]
+        try:
+            root = state_path.parent.parent if state_path.parent.name == 'artifacts' else state_path.parent
+            stem = state_path.stem.removesuffix('_' + Path(RUNTIME_STATE_FILENAME).stem)
+            log_path = root / 'strategy' / f'{stem}.jsonl'
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open('a') as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except OSError:
+            log.warning('Could not write strategy diagnostics', exc_info=True)
+        return _ToolDispatchResult(self._render_tool_payload(payload),
+                                   step_executed=dispatch.step_executed, made_progress=dispatch.made_progress)
+
+    def _capture_plan_event(self, event: dict[str, Any]) -> None:
+        self._strategy_plan_event_count += 1
+        self._strategy_plan_events.append(event)
+
+    def _run_python_tool_impl(self, state_path: Path, arguments: dict[str, Any]) -> _ToolDispatchResult:
         self._ensure_session(state_path)
         code = str(arguments.get("code", "")).rstrip()
         if not code:
@@ -5770,13 +5815,6 @@ class ToolAgent:
             last_action_call_result: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             refreshed_frame, refreshed_history = load_runtime_state(state_path)
-            if refreshed_frame is not None:
-                # Step/history count advance even for visually unchanged actions.
-                # Observation-scoped plans expire after RESET as well as moves.
-                self._workspace.sync(
-                    level=refreshed_frame.level,
-                    observation=(refreshed_frame.level, refreshed_frame.step, len(refreshed_history)),
-                )
             current_frame_payload = _ascii_frame_view_payload(refreshed_frame)
             if isinstance(next_valid_actions, list):
                 sanitized_actions = [str(item).strip() for item in next_valid_actions if str(item).strip()]
@@ -5946,8 +5984,9 @@ class ToolAgent:
             kept_functions=self._retained_sources(),
             retain_imports=_get_env_bool("ARC3_PERSISTENT_FUNCTIONS_IMPORTS", False),
             repair_hints=_get_env_bool("ARC3_PERSISTENT_FUNCTIONS_REPAIR_HINTS", False),
-            workspace_handler=self._workspace.handle if _get_env_bool("ARC3_WORKSPACE", True) else None,
-            backtest_enabled=_get_env_bool("ARC3_RULE_BACKTEST", True),
+            verified_plan_enabled=_get_env_bool("ARC3_VERIFIED_PLAN", False),
+            plan_event_handler=(self._capture_plan_event
+                                if _get_env_bool("ARC3_VERIFIED_PLAN", False) else None),
         )
 
         action_results = [
@@ -5955,6 +5994,7 @@ class ToolAgent:
             for item in sandbox_result.get("action_results") or []
             if isinstance(item, dict)
         ]
+        self._strategy_actions = action_results
         payload: dict[str, Any] = {"tool": "python"}
         self._record_retained_functions(sandbox_result, payload)
         rendered_stdout = str(sandbox_result.get("stdout", "") or "")
@@ -6107,7 +6147,7 @@ class ToolAgent:
         # that differs from the one in history would diverge from the cached
         # prefix at that point and cost a prefill on every later turn.
         context_lines = self._summary_turn_context_lines() if _summary_turn_context() else []
-        summary_prompt = COMPACT_SUMMARY if _get_env_bool("ARC3_COMPACT_PROMPT", True) else SUMMARY_REQUEST_PROMPT
+        summary_prompt = SUMMARY_REQUEST_PROMPT
         request_text = (
             "\n".join([*context_lines, "", summary_prompt])
             if context_lines

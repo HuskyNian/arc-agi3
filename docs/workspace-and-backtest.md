@@ -1,16 +1,18 @@
 # 持久工作区、历史回测与精简 prompt
 
-实现日期：2026-10-15。功能已通过本地沙箱测试；尚未用 Qwen 跑 Kaggle 分数或测量推理加速。
+2026-10-16 清理后：本页仅保留旧实验的历史说明，下文接口、配置和运行指令均已失效。对应实现、专属测试和开关已删除；当前使用说明见 [停滞反馈与验证执行](strategy-and-execution.md)。
+
+实现日期：2026-10-15。功能已通过本地沙箱测试；旧 C1/G1/Q1 组合实跑退化，新 Q2 保守措辞版尚未跑分。见 [最新分析](../analysis/strategy_revision_2026-10-15.md)。
 
 ## 运行开关
 
-三个功能独立开关，默认开启；修改环境变量后重新启动 harness/kernel。
+三个旧功能独立开关，现均默认关闭。修改环境变量后重新启动 harness/kernel。
 
 | 设置 | 默认 | 作用 |
 | --- | --- | --- |
-| `ARC3_WORKSPACE` | `1` | 显式持久数据工作区 |
-| `ARC3_RULE_BACKTEST` | `1` | Python 中的只读 `backtest` 接口 |
-| `ARC3_COMPACT_PROMPT` | `1` | 精简系统、逐轮、换关、死亡与摘要提示 |
+| `ARC3_WORKSPACE` | `0` | 显式持久数据工作区（旧实验） |
+| `ARC3_RULE_BACKTEST` | `0` | Python 中的只读 `backtest` 接口（旧实验） |
+| `ARC3_COMPACT_PROMPT` | `0` | 仅压缩原系统提示的措辞和明确重复，其他提示保持原版 |
 
 `0` 可分别关闭。全部关闭时回到旧 prompt 和旧工具接口；已有函数保留配置不变。工作区与函数保留互不依赖，但跨调用复用规则函数建议维持 notebook 已有的 `ARC3_PERSISTENT_FUNCTIONS=1`、`ARC3_PERSISTENT_FUNCTIONS_SCOPE=game`、`ARC3_PERSISTENT_FUNCTIONS_IMPORTS=1`。
 
@@ -92,7 +94,11 @@ backtest(predict, observe)
 
 ## 3. Prompt 调整
 
-按原 notebook 的配置生成并比较（[测量结果](../analysis/prompt_comparison.json)）：
+当前 Q2 保守版：同样开启 workspace/backtest 时，系统文本从 19,979→19,006 字符（-4.87%）。完整原版生成后，仅做精确措辞替换及有保留句的去重；恢复原逐轮、换关、死亡、函数提醒和摘要要求。默认关闭。查看 [原文与新版差异](../analysis/prompt_v2.diff) 和 [审计](../analysis/prompt_v2_audit.json)。这不是行为等价证明，也未证明涨分或加速。
+
+以下为已退役 Q1 的历史记录，不代表当前实现。它不仅精简，也改了策略语义；不再作为纯压缩实验。
+
+Q1 按原 notebook 的配置生成并比较（[历史测量结果](../analysis/prompt_comparison.json)）：
 
 | 内容 | 修改前 | 修改后 |
 | --- | ---: | ---: |
@@ -131,8 +137,8 @@ backtest(predict, observe)
 PYTHONPATH=ARC3-Inference python -W error::ResourceWarning -m unittest discover -s ARC3-Inference/tests -v
 ```
 
-26 项测试全部通过，覆盖真实子进程 RPC、数据拷贝/类型/容量、超时与异常、跨关与跨游戏清理、保留函数读取工作区、反例与修正规则、空覆盖/模型异常、边界转移、回测无动作副作用、功能关闭及 prompt 合约；还包括 notebook 语法和源码发现逻辑。测试暴露的沙箱 subprocess 管道未关闭问题已一并修复。
+28 项测试全部通过，覆盖真实子进程 RPC、数据拷贝/类型/容量、超时与异常、跨关与跨游戏清理、保留函数读取工作区、反例与修正规则、空覆盖/模型异常、边界转移、回测无动作副作用、功能关闭及 prompt 合约；还包括 notebook 语法和源码发现逻辑。测试暴露的沙箱 subprocess 管道未关闭问题已一并修复。测试不代表模型得分不退化。
 
 额外使用 cd82 的真实历史检查故意错误的“不变”规则：16 条转移中报告 3 个反例，未执行游戏动作。见 [接口检查结果](../analysis/backtest_real_history_smoke.json)。该检查仅验证历史输入与反例输出链路，不是新 solver 的成绩评估。
 
-下一轮仍应单项对照：旧行为三个开关全 0 → 仅 C1 → C1+G1 → C1+G1+精简 prompt。固定游戏、顺序、硬件与总时间；比较关卡数、得分、后续关卡成本以及实际工作区/回测使用情况。默认 notebook 是三项全开，用于集成试跑，不应把一次涨跌直接归因于某一项。
+下一轮仍应单项对照，固定游戏、顺序、硬件与总时间；比较关卡数、得分、后续关卡成本以及实际工作区/回测使用情况。当前 notebook 是 C1=1/G1=1/Q2=0。先完成当前对照并补充原方案复测，Q2 单独验证，不与新能力混改。完整优先级见最新分析。

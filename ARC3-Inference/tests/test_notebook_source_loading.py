@@ -20,9 +20,8 @@ class SourceLoadingTests(unittest.TestCase):
         self.discovery = setup[start:end].replace('Path("/kaggle/input")', 'input_root')
 
     def source(self, root):
-        for name in ['ARC3-Inference/inference/agent/workspace.py',
-                     'ARC3-Inference/inference/agent/compact_prompt.py',
-                     'ARC3-Inference/inference/utils/rule_backtest.py']:
+        for name in ['ARC3-Inference/inference/agent/strategy_monitor.py',
+                     'ARC3-Inference/inference/utils/verified_plan.py']:
             p = root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.touch()
@@ -58,7 +57,9 @@ class SourceLoadingTests(unittest.TestCase):
             self.assertNotIn('harness-changes.patch', source)
         setup = ''.join(self.notebook['cells'][2]['source'])
         for flag in ['ARC3_WORKSPACE', 'ARC3_RULE_BACKTEST', 'ARC3_COMPACT_PROMPT']:
-            self.assertIn(f"'{flag}': '1'", setup)
+            self.assertNotIn(flag, setup)
+        self.assertIn("'ARC3_STRATEGY_MONITOR': 'on'", setup)
+        self.assertIn("'ARC3_VERIFIED_PLAN': '1'", setup)
 
 
 if __name__ == '__main__':

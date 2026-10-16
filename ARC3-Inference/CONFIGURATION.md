@@ -1,10 +1,17 @@
 # Duck harness: cumulative change inventory
 
-2026-10-15 additions: `ARC3_WORKSPACE=1`, `ARC3_RULE_BACKTEST=1`, and
-`ARC3_COMPACT_PROMPT=1` now default on and can be disabled independently with `0`.
-See [workspace/backtest implementation and experiment guide](../docs/workspace-and-backtest.md)
-for API contracts, scope invalidation, validation limits, and Kaggle source loading.
-These additions have local behavioral tests; score/latency improvement is not yet measured.
+2026-10-16: the previous workspace/backtest/compact-prompt implementations,
+their sandbox protocols, dedicated tests and configuration switches have been
+deleted. Historical evaluation reports remain in analysis/.
+
+New independent options: `ARC3_STRATEGY_MONITOR=off|shadow|on` (source default off)
+and `ARC3_VERIFIED_PLAN=0|1` (source default 0). The notebook enables `on` / `1`.
+The monitor gives evidence-specific feedback after repeated failures or identical
+computations, with cooldown; verified plans execute at most 16 guarded actions,
+checking predicted fields after each step and stopping on the first mismatch.
+See [implementation, diagnostics and experiment guide](../docs/strategy-and-execution.md).
+Local tests verify interfaces, not model quality. The earlier combined experiment
+regressed; see [current evidence and experiment plan](../analysis/strategy_revision_2026-10-15.md).
 
 This inventory describes the current harness changes relative to **Tufa Labs’ Duck harness, commit `7652836056c59e044f093e3c13ed7438c814169e` (`7652836`)**. Full credit belongs to Jeroen Cottaar and Tufa Labs for the original solver and harness.
 

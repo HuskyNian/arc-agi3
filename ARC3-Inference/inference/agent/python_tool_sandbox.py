@@ -19,8 +19,7 @@ from typing import Any, Callable
 from inference.utils import frame_diff as _frame_diff_module
 from inference.utils import segmentation as _segmentation
 from inference.utils import retained_functions as _retained_functions
-from inference.utils import rule_backtest as _rule_backtest
-from inference.agent import workspace as _workspace
+from inference.utils import verified_plan as _verified_plan
 from inference.utils.grid_utils import ARC_COLOR_CHARS
 
 
@@ -49,9 +48,7 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
 
     __RETAINED_FUNCTIONS_SOURCE__
 
-    __WORKSPACE_DATA_SOURCE__
-
-    __RULE_BACKTEST_SOURCE__
+    __VERIFIED_PLAN_SOURCE__
 
     HOST_STDOUT = sys.stdout
 
@@ -369,62 +366,8 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         }
         runtime_globals["__builtins__"]["__import__"] = _safe_import
         _animation_views = []
-        _backtest_active = []
-
-        class WorkspaceView:
-            def _call(self, op, **args):
-                if _backtest_active and op not in ("get", "keys", "info"):
-                    raise RuntimeError("backtest is read-only; workspace writes are disabled")
-                _send({"type": "workspace", "request": {"op": op, **args}})
-                reply = _recv()
-                if reply.get("type") != "workspace_result":
-                    raise RuntimeError(str(reply.get("error", "workspace request failed")))
-                return reply.get("value")
-
-            def put(self, key, value, scope="level", expected_version=None):
-                return self._call("put", key=key, value=json_copy(value), scope=scope,
-                                  expected_version=expected_version)
-
-            def get(self, key, default=None, scope="level"):
-                return self._call("get", key=key, default=json_copy(default), scope=scope)
-
-            def delete(self, key, scope="level"):
-                return self._call("delete", key=key, scope=scope)
-
-            def keys(self, scope="level"):
-                return self._call("keys", scope=scope)
-
-            def clear(self, scope="level"):
-                return self._call("clear", scope=scope)
-
-            def info(self):
-                return self._call("info")
-
-        if initial.get("workspace_enabled"):
-            runtime_globals["workspace"] = WorkspaceView()
-
-        def backtest(predict, observe, *, indices=None, limit=32, max_examples=3):
-            if _backtest_active:
-                raise RuntimeError("nested backtest is not supported")
-            _backtest_active.append(True)
-            class QuietOutput:
-                def write(self, text):
-                    return len(text)
-                def flush(self):
-                    pass
-            try:
-                # Callbacks report through the bounded counterexamples, not
-                # arbitrarily large prints or requests for live animation.
-                with contextlib.redirect_stdout(QuietOutput()):
-                    return check_transitions(
-                        predict, observe, list(runtime_globals["transitions"]),
-                        level=runtime_globals["current_frame"].level,
-                        indices=indices, limit=limit, max_examples=max_examples)
-            finally:
-                _backtest_active.clear()
-
-        if initial.get("backtest_enabled"):
-            runtime_globals["backtest"] = backtest
+        _verification_active = []
+        _plan_stopped = []
 
         def frame_diff(before=None, after=None):
             # Object-level diff between two frames. Defaults: previous_frame -> current_frame.
@@ -527,6 +470,9 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         class TerminalStateActionError(BaseException):
             pass
 
+        class PlanStoppedError(BaseException):
+            pass
+
         runtime_globals["TerminalStateActionError"] = TerminalStateActionError
         # latched when an action reports a terminal result; scoped to THIS
         # snippet because these closures are rebuilt for every execution, so
@@ -551,8 +497,10 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         }
 
         def action(actions):
-            if _backtest_active:
-                raise RuntimeError("backtest is read-only; game actions are disabled")
+            if _verification_active:
+                raise RuntimeError("plan prediction/observation callbacks cannot act")
+            if _plan_stopped:
+                raise PlanStoppedError("Verified plan stopped; inspect its report and replan in a new snippet.")
             if _terminal_state:
                 raise TerminalStateActionError(_TERMINAL_DETAIL[_terminal_state[0]])
             normalized_actions = _normalize_actions(actions)
@@ -634,8 +582,8 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             return action_result
 
         def _animation_fetch(kind):
-            if _backtest_active:
-                raise RuntimeError("backtest cannot read live animation; use the supplied historical frame")
+            if _verification_active:
+                raise RuntimeError("plan callbacks cannot fetch live animation")
             _send({"type": "animation", "request": {"kind": kind}})
             reply = _recv()
             if reply.get("type") == "animation_error":
@@ -657,6 +605,46 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             ]
 
         runtime_globals["action"] = action
+
+        def _plan_event(event):
+            _send({"type": "plan_event", "event": event})
+            if _recv().get("type") != "plan_event_ack":
+                raise RuntimeError("invalid plan event response")
+
+        def execute_plan(actions, predict, observe, *, start):
+            if _verification_active:
+                raise RuntimeError("nested/read-only execute_plan is not supported")
+            if _plan_stopped or _terminal_state:
+                raise PlanStoppedError("Plan/level already stopped; replan in a new snippet.")
+            normalized = _normalize_actions(actions)
+            class QuietOutput:
+                def write(self, text):
+                    return len(text)
+                def flush(self):
+                    pass
+            def checked(callback, *args):
+                _verification_active.append(True)
+                try:
+                    with contextlib.redirect_stdout(QuietOutput()):
+                        return callback(*args)
+                finally:
+                    _verification_active.clear()
+            _plan_event({"event": "start", "requested": len(normalized)})
+            try:
+                report = run_verified_plan(normalized, predict, observe, start=start,
+                    get_frame=lambda: runtime_globals["current_frame"], act=action, check=checked)
+            except BaseException as exc:
+                _plan_stopped.append(True)
+                _plan_event({"event": "finish", "status": "interrupted",
+                             "detail": str(exc)[:240]})
+                raise
+            if report["status"] != "complete":
+                _plan_stopped.append(True)
+            _plan_event({"event": "finish", **report})
+            return report
+
+        if initial.get("verified_plan_enabled"):
+            runtime_globals["execute_plan"] = execute_plan
         if initial.get("animation_enabled"):
             # Globals rather than attributes on last_transition: after a death
             # the harness appends a RESET entry, so last_transition is the
@@ -778,6 +766,7 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             RepeatedActionInStateError,
             KnownDeathActionError,
             TerminalStateActionError,
+            PlanStoppedError,
             Exception,
         ) as exc:
             # The three refusals derive from BaseException so a model's own
@@ -803,9 +792,7 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         main()
     """
 ).replace("__RETAINED_FUNCTIONS_SOURCE__\n", inspect.getsource(_retained_functions)).replace(
-    "__WORKSPACE_DATA_SOURCE__\n", inspect.getsource(_workspace.json_copy)
-).replace(
-    "__RULE_BACKTEST_SOURCE__\n", inspect.getsource(_rule_backtest)
+    "__VERIFIED_PLAN_SOURCE__\n", inspect.getsource(_verified_plan)
 ).replace(
     "__SEGMENTATION_SOURCE__\n", inspect.getsource(_segmentation)
 ).replace(
@@ -894,8 +881,8 @@ def run_sandboxed_python(
     kept_functions: list[str] | None = None,
     retain_imports: bool = False,
     repair_hints: bool = False,
-    workspace_handler: Callable[[dict[str, Any]], Any] | None = None,
-    backtest_enabled: bool = False,
+    verified_plan_enabled: bool = False,
+    plan_event_handler: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="rgb_python_tool_") as sandbox_dir, contextlib.ExitStack() as cleanup:
         host_action_results: list[dict[str, Any]] = []
@@ -940,8 +927,7 @@ def run_sandboxed_python(
                 "retain_imports": retain_imports,
                 "repair_hints": repair_hints,
                 "animation_enabled": animation_handler is not None,
-                "workspace_enabled": workspace_handler is not None,
-                "backtest_enabled": backtest_enabled,
+                "verified_plan_enabled": verified_plan_enabled,
                 "timeout_seconds": timeout_seconds,
                 "sandbox_cwd": sandbox_dir,
                 "state": initial_state,
@@ -987,18 +973,10 @@ def run_sandboxed_python(
                 }
 
             msg_type = str(message.get("type", "")).strip()
-            if msg_type == "workspace":
-                try:
-                    if workspace_handler is None:
-                        raise ValueError("workspace is disabled")
-                    value = workspace_handler(dict(message.get("request") or {}))
-                    reply = {"type": "workspace_result", "value": value}
-                except (ValueError, TypeError, RecursionError) as exc:
-                    reply = {"type": "workspace_error", "error": str(exc)[:300]}
-                except Exception:
-                    log.exception("workspace operation failed")
-                    reply = {"type": "workspace_error", "error": "workspace operation failed"}
-                _send_json_line(process.stdin, reply)
+            if msg_type == "plan_event":
+                if plan_event_handler is not None:
+                    plan_event_handler(dict(message.get("event") or {}))
+                _send_json_line(process.stdin, {"type": "plan_event_ack"})
                 continue
             if msg_type == "animation":
                 if animation_handler is None:
